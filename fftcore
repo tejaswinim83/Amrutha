@@ -1,0 +1,459 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.NUMERIC_STD.ALL;
+
+entity fft_core is
+    generic (
+        input_width      : integer := 16;
+        fft_size_log_g   : integer := 10;
+        trunc_g          : integer := 11;
+        radix2_size1_g   : integer := 38;
+        radix2_size2_g   : integer := 54
+    );
+    port (
+        clk_is      : in  std_logic;
+        reset_is    : in  std_logic;
+        start_is    : in  std_logic;
+        unload_is   : in  std_logic;
+        xn_re       : in  std_logic_vector(input_width-1 downto 0);
+        xn_im       : in  std_logic_vector(input_width-1 downto 0);
+        fft_status  : out std_logic_vector(7 downto 0);
+        done        : out std_logic;
+        xn_index    : out std_logic_vector(fft_size_log_g-1 downto 0);
+        xk_index    : out std_logic_vector(fft_size_log_g-1 downto 0);
+        xk_re       : out std_logic_vector(input_width+fft_size_log_g downto 0);
+        xk_im       : out std_logic_vector(input_width+fft_size_log_g downto 0)
+    );
+end entity;
+
+architecture rtl of fft_core is
+
+    ----------------------------------------------------------------
+    -- Component Declarations
+    ----------------------------------------------------------------
+    component radix2
+        generic (
+            input_width    : integer;
+            fft_size_log_g : integer;
+            radix2_size1_g : integer;
+            radix2_size2_g : integer
+        );
+        port (
+            clk_is        : in std_logic;
+            reset_is      : in std_logic;
+            x0_re_is      : in std_logic_vector(radix2_size1_g-1 downto 0);
+            x0_im_is      : in std_logic_vector(radix2_size1_g-1 downto 0);
+            x1_re_is      : in std_logic_vector(radix2_size1_g-1 downto 0);
+            x1_im_is      : in std_logic_vector(radix2_size1_g-1 downto 0);
+            twiddle_re_is : in std_logic_vector(15 downto 0);
+            twiddle_im_is : in std_logic_vector(15 downto 0);
+            y0_re_os      : out std_logic_vector(radix2_size1_g-1 downto 0);
+            y0_im_os      : out std_logic_vector(radix2_size1_g-1 downto 0);
+            y1_re_os      : out std_logic_vector(radix2_size1_g-1 downto 0);
+            y1_im_os      : out std_logic_vector(radix2_size1_g-1 downto 0)
+        );
+    end component;
+
+    component addr_genxk_re_os<=iram2_doutb_s(radix2_size1_g-1 downto 0);
+        generic (
+            input_width    : integer;
+            fft_size_log_g : integer
+        );
+        port (
+            clk_is          : in std_logic;
+            reset_is        : in std_logic;
+            start_is        : in std_logic;
+            unload_is       : in std_logic;
+            stage_count_is  : in std_logic_vector(3 downto 0);
+            group_count_is  : in std_logic_vector(fft_size_log_g-2 downto 0);
+            xn_index_os     : out std_logic_vector(fft_size_log_g-1 downto 0);
+            xn_index1_os    : out std_logic_vector(fft_size_log_g-1 downto 0);
+            xk_index_os     : out std_logic_vector(fft_size_log_g-1 downto 0);
+            xk_index1_os    : out std_logic_vector(fft_size_log_g-1 downto 0);
+            xk_count_en_os  : out std_logic;
+            fft_ram1_raddr_os : out std_logic_vector(fft_size_log_g-1 downto 0);
+            fft_ram2_raddr_os : out std_logic_vector(fft_size_log_g-1 downto 0);
+            fft_rom_addr_os   : out std_logic_vector(fft_size_log_g-2 downto 0)
+        );
+    end component;
+
+    component fft_bram
+        port (
+            clka  : in std_logic;
+            ena   : in std_logic;
+            wea   : in std_logic_vector(0 downto 0);
+            dina  : in std_logic_vector(radix2_size1_g-1 downto 0);
+            clkb  : in std_logic;
+            enb   : in std_logic;
+            addrb : in std_logic_vector(fft_size_log_g-1 downto 0);
+            doutb : out std_logic_vector(radix2_size1_g-1 downto 0)
+        );
+    end component;
+
+    component twid_ram
+        generic (
+            fft_log_g : integer
+        );
+        port (
+            clk_is          : in std_logic;
+            reset_is        : in std_logic;
+            fft_rom_is      : in std_logic;
+            twid_refresh_is : in std_logic;
+            fft_rom_addr_is : in std_logic_vector(fft_size_log_g-2 downto 0);
+            twiddle_re_os   : out std_logic_vector(15 downto 0);
+            twiddle_im_os   : out std_logic_vector(15 downto 0)
+        );
+    end component;
+
+    ----------------------------------------------------------------
+    -- Type and signal declarations
+    ----------------------------------------------------------------
+    type state_type is (s0, s1, s2, s3, s4, s5);
+
+    signal fsm_state_s, prev_state_s : state_type;
+    signal stage_done_s, group_count_en_s, stage_count_en_s : std_logic;
+    signal fft_done_s, done_s, unload_over_s, unload_wdt_s : std_logic;
+    signal start_sync_ff1_s, start_sync_ff2_s, xk_count_en_s : std_logic;
+    signal xn_index1_s, ram1_addra_s, ram2_addra_s, ram1_rd_addr_s, ram2_rd_addr_s : std_logic_vector(fft_size_log_g-1 downto 0);
+    signal ram1_wr_addr_reg_s, ram2_wr_addr_reg_s, iram1_addra_reg_s, iram2_addra_reg_s : std_logic_vector(fft_size_log_g-1 downto 0);
+    signal iram1_addra_reg1_s, iram2_addra_reg1_s, qram1_addra_reg_s, qram2_addra_reg_s : std_logic_vector(fft_size_log_g-1 downto 0);
+    signal iram1_dina_s, iram2_dina_s, qram1_dina_s, qram2_dina_s : std_logic_vector(radix2_size1_g-1 downto 0);
+    signal iram1_doutb_s, iram2_doutb_s, qram1_doutb_s, qram2_doutb_s : std_logic_vector(radix2_size1_g-1 downto 0);
+    signal iram1_wea_s, iram2_wea_s, qram1_wea_s, qram2_wea_s : std_logic_vector(0 downto 0);
+    signal iram1_re_s, iram2_re_s, qram1_re_s, qram2_re_s : std_logic;
+    signal y0_re_s, y1_re_s, y0_im_s, y1_im_s : std_logic_vector(radix2_size1_g-1 downto 0);
+    signal x0_re_s, x1_re_s, x0_im_s, x1_im_s : std_logic_vector(radix2_size1_g-1 downto 0);
+    signal zeros_s : std_logic_vector(trunc_g-1 downto 0);
+    signal fft_rom_addr_s : std_logic_vector(fft_size_log_g-2 downto 0);
+    signal iram1_ena_s, iram2_ena_s, iram1_ena_reg_s, qram1_ena_s, qram1_ena_reg_s, qram2_ena_s : std_logic;
+    signal twiddle_re_s, twiddle_im_s : std_logic_vector(15 downto 0);
+    signal xk_index_s, xk_index1_s : std_logic_vector(fft_size_log_g-1 downto 0);
+    signal par_ram1_ra_s, par_ram2_ra_s, par_ram1_wa_s, par_ram2_wa_s : std_logic;
+    signal par_ram1_ra_reg1_s, par_ram2_ra_reg1_s, par_ram1_ra_reg2_s, par_ram2_ra_reg2_s : std_logic;
+    signal half_over_s : std_logic;
+    signal wdt_count_s : std_logic_vector(4 downto 0);
+    signal wdt_occur_s : std_logic_vector(3 downto 0);
+
+    ----------------------------------------------------------------
+    -- FSM Process
+    ----------------------------------------------------------------
+    fsm_proc : process(clk_is, reset_is)
+    begin
+        if reset_is = '1' then
+            fsm_state_s <= s0;
+            prev_state_s <= s0;
+        elsif rising_edge(clk_is) then
+            prev_state_s <= fsm_state_s;
+            case fsm_state_s is
+                when s0 =>
+                    if start_sync_ff2_s = '1' then
+                        fsm_state_s <= s1;
+                    end if;
+                when s1 =>
+                    if load_done_s = '1' then
+                        fsm_state_s <= s2;
+                    end if;
+                when s2 =>
+                    if stage_done_s = '1' then
+                        fsm_state_s <= s3;
+                    end if;
+                when s3 =>
+                    if fft_done_s = '1' then
+                        fsm_state_s <= s4;
+                    else
+                        fsm_state_s <= s2;
+                    end if;
+                when s4 =>
+                    if unload_over_s='1' or unload_wdt_s='1' then
+                        fsm_state_s <= s5;
+                    end if;
+                when s5 =>
+                    fsm_state_s <= s0;
+                when others =>
+                    fsm_state_s <= s0;
+            end case;
+        end if;
+    end process;
+
+    group_count_en_s <= '1' when fsm_state_s=s2 else '0';
+    stage_count_en_s <= '1' when fsm_state_s=s3 and prev_state_s=s2 else '0';
+    zeros_s <= (others=>'0');
+    fft_status_os <= stage_count_s & wdt_occur_s;
+
+    ----------------------------------------------------------------
+    -- Butterfly Instantiation
+    ----------------------------------------------------------------
+    u_butterfly: radix2
+        generic map(
+            input_width    => input_width,
+            fft_size_log_g => fft_size_log_g,
+            radix2_size1_g => radix2_size1_g,
+            radix2_size2_g => radix2_size2_g
+        )
+        port map(
+            clk_is        => clk_is,
+            reset_is      => reset_is,
+            x0_re_is      => x0_re_s,
+            x0_im_is      => x0_im_s,
+            x1_re_is      => x1_re_s,
+            x1_im_is      => x1_im_s,
+            twiddle_re_is => twiddle_re_s, 
+            twiddle_im_is => twiddle_im_s, 
+            y0_re_os      => y0_re_s,
+            y0_im_os      => y0_im_s,
+            y1_re_os      => y1_re_s,
+            y1_im_os      => y1_im_s
+        );
+
+    ----------------------------------------------------------------
+    -- Address Generator Instantiation
+    ----------------------------------------------------------------
+    u_addr_gen: addr_gen
+        generic map(
+            input_width    => input_width,
+            fft_size_log_g => fft_size_log_g
+        )
+        port map(
+            clk_is          => clk_is,
+            reset_is        => reset_is,
+            start_is        => start_is,
+            unload_is       => unload_is,
+            stage_count_is  => stage_count_s,
+            group_count_is  => group_count_s,
+            xn_index_os     => xn_index_os,
+            xn_index1_os    => xn_index1_s,
+            xk_index_os     => xk_index_s,
+            xk_index1_os    => xk_index1_s,
+            xk_count_en_os  => xk_count_en_s,
+            fft_ram1_raddr_os => ram1_rd_addr_s,
+            fft_ram2_raddr_os => ram2_rd_addr_s,
+            fft_rom_addr_os   => fft_rom_addr_s
+        );
+
+    xk_index_os <= xk_index_s;
+    x0_re_s <= iram1_doutb_s when par_ram1_ra_reg1_s='1' else iram2_doutb_s;
+    x0_im_s <= qram1_doutb_s when par_ram1_ra_reg1_s='1' else qram2_doutb_s;
+    x1_re_s <= iram1_doutb_s when par_ram2_ra_reg1_s='1' else iram2_doutb_s;
+    x1_im_s <= qram1_doutb_s when par_ram2_ra_reg1_s='1' else qram2_doutb_s;
+
+    par_ram1_ra_s <= ram1_rd_addr_s(0) xor ram1_rd_addr_s(1) xor ram1_rd_addr_s(2) xor ram1_rd_addr_s(3) xor ram1_rd_addr_s(4) xor ram1_rd_addr_s(5) xor ram1_rd_addr_s(6) xor ram1_rd_addr_s(7) xor ram1_rd_addr_s(8) xor ram1_rd_addr_s(9);
+    par_ram2_ra_s <= ram2_rd_addr_s(0) xor ram2_rd_addr_s(1) xor ram2_rd_addr_s(2) xor ram2_rd_addr_s(3) xor ram2_rd_addr_s(4) xor ram2_rd_addr_s(5) xor ram2_rd_addr_s(6) xor ram2_rd_addr_s(7) xor ram2_rd_addr_s(8) xor ram2_rd_addr_s(9);
+    
+    ----------------------------------------------------------------
+-- Parallel RAM pipeline process
+----------------------------------------------------------------
+par_ram_proc : process(clk_is, reset_is)
+begin
+    if reset_is='1' then
+        par_ram1_ra_s       <= '0';
+        par_ram2_ra_s       <= '0';
+        par_ram1_wa_s       <= '0';
+        par_ram2_wa_s       <= '0';
+        par_ram1_ra_reg1_s  <= '0';
+        par_ram2_ra_reg1_s  <= '0';
+        par_ram1_ra_reg2_s  <= '0';
+        par_ram2_ra_reg2_s  <= '0';
+    elsif rising_edge(clk_is) then
+        par_ram1_ra_reg1_s <= par_ram1_ra_s;
+        par_ram2_ra_reg1_s <= par_ram2_ra_s;
+        par_ram1_ra_reg2_s <= par_ram1_ra_reg1_s;
+        par_ram2_ra_reg2_s <= par_ram2_ra_reg1_s;
+        par_ram1_wa_s      <= par_ram1_ra_reg2_s;
+        par_ram2_wa_s      <= par_ram2_ra_reg2_s;
+    end if;
+end process;
+
+----------------------------------------------------------------
+-- Twiddle RAM instantiation
+----------------------------------------------------------------
+u_twiddle_ram: twid_ram
+    generic map(
+        fft_log_g => fft_size_log_g
+    )
+    port map(
+        clk_is          => clk_is,
+        reset_is        => reset_is,
+        fft_rom_is      => fft_rom_re_s,
+        twid_refresh_is => '0',  -- assumed static, adjust later if needed
+        fft_rom_addr_is => fft_rom_addr_s,
+        twiddle_re_os   => twiddle_re_s,
+        twiddle_im_os   => twiddle_im_s
+    );
+
+----------------------------------------------------------------
+-- FFT ROM enable signal
+----------------------------------------------------------------
+fft_rom_re_s <= '1' when fsm_state_s = s2 else '0';
+
+----------------------------------------------------------------
+-- Twiddle RAM instantiation
+----------------------------------------------------------------
+u_twiddle_ram: twid_ram
+    generic map(
+        fft_log_g => fft_size_log_g
+    )
+    port map(
+        clk_is          => clk_is,
+        reset_is        => reset_is,
+        fft_rom_is      => fft_rom_re_s,
+        twid_refresh_is => start_sync_ff2_s,
+        fft_rom_addr_is => fft_rom_addr_s,
+        twiddle_re_os   => twiddle_re_s,
+        twiddle_im_os   => twiddle_im_s
+    );
+
+fft_rom_re_s <= '1' when fsm_state_s = s2 else '0';
+
+----------------------------------------------------------------
+-- RAM write/read control process
+----------------------------------------------------------------
+ram_ctrl_proc : process(clk_is, reset_is)
+begin
+    if reset_is = '1' then
+        ram1_wr_addr_reg_s <= (others => '0');
+        ram2_wr_addr_reg_s <= (others => '0');
+        ram1_wea_s         <= '0';
+        ram2_wea_s         <= '0';
+        iram1_re_s         <= '0';
+        iram2_re_s         <= '0';
+
+    elsif rising_edge(clk_is) then
+
+        -- Address swap in final stage
+        if fsm_state_s = s2 and stage_count_s = "1001" then
+            ram1_wr_addr_reg_s <= ram2_wr_addr_reg_s;
+            ram2_wr_addr_reg_s <= ram1_wr_addr_reg_s;
+        else
+            ram1_wr_addr_reg_s <= iram1_addrb_s;
+            ram2_wr_addr_reg_s <= iram2_addrb_s;
+        end if;
+
+        -- RAM1 write enable
+        if fsm_state_s = s2 and group_count_s >= "0000000011" then
+            ram1_wea_s <= '1';
+        elsif fsm_state_s = s3 then
+            ram1_wea_s <= '0';
+        end if;
+
+        -- RAM2 write enable
+        if fsm_state_s = s2 and group_count_s >= "0000000011" then
+            ram2_wea_s <= '1';
+        elsif fsm_state_s = s3 then
+            ram2_wea_s <= '0';
+        end if;
+
+        -- Read enable control
+        if fsm_state_s = s2 or fsm_state_s = s4 then
+            iram1_re_s <= '1';
+            iram2_re_s <= '1';
+        else
+            iram1_re_s <= '0';
+            iram2_re_s <= '0';
+        end if;
+
+    end if;
+end process;
+
+----------------------------------------------------------------
+-- Internal RAM data input selection
+----------------------------------------------------------------
+iram1_dina_s <=
+    sxt(xn_re_is, input_width + fft_size_log_g + 1) & zeros_s  when fsm_state_s = s1 else
+    y1_re_s                                                   when fsm_state_s = s2 and stage_count_s >= "1001" else
+    y0_re_s                                                   when fsm_state_s = s2 and par_ram1_wa_s = '1' else
+    y1_re_s                                                   when fsm_state_s = s2 and par_ram2_wa_s = '1' else
+    (others => '0');
+
+iram2_dina_s <=
+    sxt(xn_im_is, input_width + fft_size_log_g + 1) & zeros_s  when fsm_state_s = s1 else
+    y1_im_s                                                   when fsm_state_s = s2 and stage_count_s >= "1001" else
+    y0_im_s                                                   when fsm_state_s = s2 and par_ram1_wa_s = '1' else
+    y1_im_s                                                   when fsm_state_s = s2 and par_ram2_wa_s = '1' else
+    (others => '0');
+
+----------------------------------------------------------------
+-- Write address logic
+----------------------------------------------------------------
+ram1_addra_s <=
+    xn_index1_s        when fsm_state_s = s1 else
+    ram1_wr_addr_reg_s when fsm_state_s = s2 else
+    (others => '0');
+
+ram2_addra_s <=
+    xn_index1_s        when fsm_state_s = s1 else
+    ram2_wr_addr_reg_s when fsm_state_s = s2 else
+    (others => '0');
+
+----------------------------------------------------------------
+-- Read address logic
+----------------------------------------------------------------
+iram1_addrb_s <=
+    ram1_rd_addr_s when fsm_state_s = s2 and par_ram1_ra_s = '1' else
+    ram2_rd_addr_s when fsm_state_s = s2 and par_ram2_ra_s = '1' else
+    xk_index1_s    when fsm_state_s = s4 else
+    (others => '0');
+
+qram1_addrb_s <= iram1_addrb_s;
+
+
+iram2_addrb_s <=
+    ram1_rd_addr_s when fsm_state_s = s2 and par_ram1_ra_s = '0' else
+    ram2_rd_addr_s when fsm_state_s = s2 and par_ram2_ra_s = '0' else
+    xk_index1_s    when fsm_state_s = s4 else
+    (others => '0');
+
+qram2_addrb_s <= iram2_addrb_s;
+
+----------------------------------------------------------------
+-- Write address pipeline registers
+----------------------------------------------------------------
+addr_reg_proc : process(clk_is, reset_is)
+begin
+    if reset_is = '1' then
+        iram1_addra_reg_s  <= (others => '0');
+        iram2_addra_reg_s  <= (others => '0');
+        iram1_addra_reg1_s <= (others => '0');
+        iram2_addra_reg1_s <= (others => '0');
+
+    elsif rising_edge(clk_is) then
+        iram1_addra_reg1_s <= ram1_addra_s;
+        iram2_addra_reg1_s <= ram2_addra_s;
+
+        iram1_addra_reg_s  <= iram1_addra_reg1_s;
+        iram2_addra_reg_s  <= iram2_addra_reg1_s;
+    end if;
+end process;
+
+qram1_addra_reg_s <= iram1_addra_reg_s;
+qram2_addra_reg_s <= iram2_addra_reg_s;
+
+----------------------------------------------------------------
+-- RAM enable and write control
+----------------------------------------------------------------
+
+-- IRAM1
+iram1_ena_s <= '1' when fsm_state_s = s1 else
+               ram1_wea_s when fsm_state_s = s2 else
+               '0';
+
+iram1_wea_s(0) <= iram1_ena_s;
+
+-- IRAM2
+iram2_ena_s <= '1' when fsm_state_s = s1 else
+               ram2_wea_s when fsm_state_s = s2 else
+               '0';
+
+iram2_wea_s(0) <= iram2_ena_s;
+
+-- QRAM1
+qram1_wea_s(0) <= iram1_ena_s;
+qram1_re_s     <= iram1_re_s;
+
+-- QRAM2
+qram2_wea_s(0) <= iram2_ena_s;
+qram2_re_s     <= iram2_re_s;
+
+processs
+
+end architecture;
+
