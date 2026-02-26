@@ -1,0 +1,219 @@
+Looking at your code, I can see you need to decode the tracking flags (T, P, E, D, H, A, R) from the flag words. Based on your description, here's how to implement the decoding for all 12 channels:
+
+## Flag Word Structure:
+- **FLAG_CH1_CH2_HEX** (bytes 484-488): Contains flags for CH1 and CH2
+- **FLAG_CH3_CH4_HEX** (bytes 488-492): Contains flags for CH3 and CH4
+- You'll need additional flag words for CH5-CH12
+
+Based on your pattern, let me help you extract all flag words and decode them:
+
+```python
+# In your process_data() function, after extracting other hex values:
+
+# FLAG WORDS for all channels
+FLAG_CH1_CH2_HEX = hexDecodedData[484:488]  # CH1 and CH2 flags
+FLAG_CH3_CH4_HEX = hexDecodedData[488:492]  # CH3 and CH4 flags
+FLAG_CH5_CH6_HEX = hexDecodedData[492:496]  # CH5 and CH6 flags (you need to verify these indices)
+FLAG_CH7_CH8_HEX = hexDecodedData[496:500]  # CH7 and CH8 flags
+FLAG_CH9_CH10_HEX = hexDecodedData[500:504] # CH9 and CH10 flags
+FLAG_CH11_CH12_HEX = hexDecodedData[504:508] # CH11 and CH12 flags
+
+# Convert to integers
+flag_ch1_ch2 = reverse_and_concatenate(FLAG_CH1_CH2_HEX)
+flag_ch3_ch4 = reverse_and_concatenate(FLAG_CH3_CH4_HEX)
+flag_ch5_ch6 = reverse_and_concatenate(FLAG_CH5_CH6_HEX)
+flag_ch7_ch8 = reverse_and_concatenate(FLAG_CH7_CH8_HEX)
+flag_ch9_ch10 = reverse_and_concatenate(FLAG_CH9_CH10_HEX)
+flag_ch11_ch12 = reverse_and_concatenate(FLAG_CH11_CH12_HEX)
+
+# Define status mapping for T flags (2-bit values)
+t_status_map = {
+    0b00: 'I',  # IDLE
+    0b01: 'A',  # ACQ
+    0b10: 'T',  # TRK
+    0b11: 'N'   # NA/Invalid
+}
+
+# Define mapping for single-bit flags (P, E, D, H, A, R)
+def decode_single_bit(bit_value, flag_type):
+    """
+    Decode single-bit flags based on flag type
+    """
+    if flag_type == 'P':  # Constellation
+        return 'Y' if bit_value == 1 else 'N'
+    elif flag_type == 'E':  # Ephemeris
+        return 'Y' if bit_value == 1 else 'N'
+    elif flag_type == 'D':  # DR
+        return 'Y' if bit_value == 1 else 'N'
+    elif flag_type == 'H':  # Health
+        return 'G' if bit_value == 0 else 'B'  # 0=Good, 1=Bad
+    elif flag_type == 'A':  # RF Chain
+        return '2' if bit_value == 1 else '1'  # 0=RF1, 1=RF2
+    elif flag_type == 'R':  # Rejection
+        return 'R' if bit_value == 1 else 'P'  # 1=Rejected, 0=Passed
+    else:
+        return str(bit_value)
+
+# Decode CH1 flags
+t1_flag = t_status_map.get(flag_ch1_ch2 & 0b11, 'N')  # Bits 0-1
+e1_flag = decode_single_bit((flag_ch1_ch2 >> 2) & 0x1, 'E')  # Bit 2
+p1_flag = decode_single_bit((flag_ch1_ch2 >> 3) & 0x1, 'P')  # Bit 3
+d1_flag = decode_single_bit((flag_ch1_ch2 >> 4) & 0x1, 'D')  # Bit 4
+a1_flag = decode_single_bit((flag_ch1_ch2 >> 5) & 0x3, 'A')  # Bits 5-6 (but A uses 2 bits? Based on your description)
+r1_flag = decode_single_bit((flag_ch1_ch2 >> 7) & 0x1, 'R')  # Bit 7
+
+# Decode CH2 flags (bits 8-15)
+t2_flag = t_status_map.get((flag_ch1_ch2 >> 8) & 0b11, 'N')  # Bits 8-9
+e2_flag = decode_single_bit((flag_ch1_ch2 >> 10) & 0x1, 'E')  # Bit 10
+p2_flag = decode_single_bit((flag_ch1_ch2 >> 11) & 0x1, 'P')  # Bit 11
+d2_flag = decode_single_bit((flag_ch1_ch2 >> 12) & 0x1, 'D')  # Bit 12
+a2_flag = decode_single_bit((flag_ch1_ch2 >> 13) & 0x3, 'A')  # Bits 13-14
+r2_flag = decode_single_bit((flag_ch1_ch2 >> 15) & 0x1, 'R')  # Bit 15
+
+# Decode CH3 flags
+t3_flag = t_status_map.get(flag_ch3_ch4 & 0b11, 'N')
+e3_flag = decode_single_bit((flag_ch3_ch4 >> 2) & 0x1, 'E')
+p3_flag = decode_single_bit((flag_ch3_ch4 >> 3) & 0x1, 'P')
+d3_flag = decode_single_bit((flag_ch3_ch4 >> 4) & 0x1, 'D')
+a3_flag = decode_single_bit((flag_ch3_ch4 >> 5) & 0x3, 'A')
+r3_flag = decode_single_bit((flag_ch3_ch4 >> 7) & 0x1, 'R')
+
+# Decode CH4 flags
+t4_flag = t_status_map.get((flag_ch3_ch4 >> 8) & 0b11, 'N')
+e4_flag = decode_single_bit((flag_ch3_ch4 >> 10) & 0x1, 'E')
+p4_flag = decode_single_bit((flag_ch3_ch4 >> 11) & 0x1, 'P')
+d4_flag = decode_single_bit((flag_ch3_ch4 >> 12) & 0x1, 'D')
+a4_flag = decode_single_bit((flag_ch3_ch4 >> 13) & 0x3, 'A')
+r4_flag = decode_single_bit((flag_ch3_ch4 >> 15) & 0x1, 'R')
+
+# Decode CH5 flags
+t5_flag = t_status_map.get(flag_ch5_ch6 & 0b11, 'N')
+e5_flag = decode_single_bit((flag_ch5_ch6 >> 2) & 0x1, 'E')
+p5_flag = decode_single_bit((flag_ch5_ch6 >> 3) & 0x1, 'P')
+d5_flag = decode_single_bit((flag_ch5_ch6 >> 4) & 0x1, 'D')
+a5_flag = decode_single_bit((flag_ch5_ch6 >> 5) & 0x3, 'A')
+r5_flag = decode_single_bit((flag_ch5_ch6 >> 7) & 0x1, 'R')
+
+# Decode CH6 flags
+t6_flag = t_status_map.get((flag_ch5_ch6 >> 8) & 0b11, 'N')
+e6_flag = decode_single_bit((flag_ch5_ch6 >> 10) & 0x1, 'E')
+p6_flag = decode_single_bit((flag_ch5_ch6 >> 11) & 0x1, 'P')
+d6_flag = decode_single_bit((flag_ch5_ch6 >> 12) & 0x1, 'D')
+a6_flag = decode_single_bit((flag_ch5_ch6 >> 13) & 0x3, 'A')
+r6_flag = decode_single_bit((flag_ch5_ch6 >> 15) & 0x1, 'R')
+
+# Decode CH7 flags
+t7_flag = t_status_map.get(flag_ch7_ch8 & 0b11, 'N')
+e7_flag = decode_single_bit((flag_ch7_ch8 >> 2) & 0x1, 'E')
+p7_flag = decode_single_bit((flag_ch7_ch8 >> 3) & 0x1, 'P')
+d7_flag = decode_single_bit((flag_ch7_ch8 >> 4) & 0x1, 'D')
+a7_flag = decode_single_bit((flag_ch7_ch8 >> 5) & 0x3, 'A')
+r7_flag = decode_single_bit((flag_ch7_ch8 >> 7) & 0x1, 'R')
+
+# Decode CH8 flags
+t8_flag = t_status_map.get((flag_ch7_ch8 >> 8) & 0b11, 'N')
+e8_flag = decode_single_bit((flag_ch7_ch8 >> 10) & 0x1, 'E')
+p8_flag = decode_single_bit((flag_ch7_ch8 >> 11) & 0x1, 'P')
+d8_flag = decode_single_bit((flag_ch7_ch8 >> 12) & 0x1, 'D')
+a8_flag = decode_single_bit((flag_ch7_ch8 >> 13) & 0x3, 'A')
+r8_flag = decode_single_bit((flag_ch7_ch8 >> 15) & 0x1, 'R')
+
+# Decode CH9 flags
+t9_flag = t_status_map.get(flag_ch9_ch10 & 0b11, 'N')
+e9_flag = decode_single_bit((flag_ch9_ch10 >> 2) & 0x1, 'E')
+p9_flag = decode_single_bit((flag_ch9_ch10 >> 3) & 0x1, 'P')
+d9_flag = decode_single_bit((flag_ch9_ch10 >> 4) & 0x1, 'D')
+a9_flag = decode_single_bit((flag_ch9_ch10 >> 5) & 0x3, 'A')
+r9_flag = decode_single_bit((flag_ch9_ch10 >> 7) & 0x1, 'R')
+
+# Decode CH10 flags
+t10_flag = t_status_map.get((flag_ch9_ch10 >> 8) & 0b11, 'N')
+e10_flag = decode_single_bit((flag_ch9_ch10 >> 10) & 0x1, 'E')
+p10_flag = decode_single_bit((flag_ch9_ch10 >> 11) & 0x1, 'P')
+d10_flag = decode_single_bit((flag_ch9_ch10 >> 12) & 0x1, 'D')
+a10_flag = decode_single_bit((flag_ch9_ch10 >> 13) & 0x3, 'A')
+r10_flag = decode_single_bit((flag_ch9_ch10 >> 15) & 0x1, 'R')
+
+# Decode CH11 flags
+t11_flag = t_status_map.get(flag_ch11_ch12 & 0b11, 'N')
+e11_flag = decode_single_bit((flag_ch11_ch12 >> 2) & 0x1, 'E')
+p11_flag = decode_single_bit((flag_ch11_ch12 >> 3) & 0x1, 'P')
+d11_flag = decode_single_bit((flag_ch11_ch12 >> 4) & 0x1, 'D')
+a11_flag = decode_single_bit((flag_ch11_ch12 >> 5) & 0x3, 'A')
+r11_flag = decode_single_bit((flag_ch11_ch12 >> 7) & 0x1, 'R')
+
+# Decode CH12 flags
+t12_flag = t_status_map.get((flag_ch11_ch12 >> 8) & 0b11, 'N')
+e12_flag = decode_single_bit((flag_ch11_ch12 >> 10) & 0x1, 'E')
+p12_flag = decode_single_bit((flag_ch11_ch12 >> 11) & 0x1, 'P')
+d12_flag = decode_single_bit((flag_ch11_ch12 >> 12) & 0x1, 'D')
+a12_flag = decode_single_bit((flag_ch11_ch12 >> 13) & 0x3, 'A')
+r12_flag = decode_single_bit((flag_ch11_ch12 >> 15) & 0x1, 'R')
+```
+
+Then update the GUI entries with these decoded values:
+
+```python
+# Update T flags
+t1.config(state="normal")
+t1.delete(0, END)
+t1.insert(0, t1_flag)
+t1.config(state="readonly")
+
+t2.config(state="normal")
+t2.delete(0, END)
+t2.insert(0, t2_flag)
+t2.config(state="readonly")
+
+# ... continue for t3 through t12 ...
+
+# Update P flags
+p1.config(state="normal")
+p1.delete(0, END)
+p1.insert(0, p1_flag)
+p1.config(state="readonly")
+
+# ... continue for p2 through p12 ...
+
+# Update E flags
+e1.config(state="normal")
+e1.delete(0, END)
+e1.insert(0, e1_flag)
+e1.config(state="readonly")
+
+# ... continue for e2 through e12 ...
+
+# Update D flags
+d1.config(state="normal")
+d1.delete(0, END)
+d1.insert(0, d1_flag)
+d1.config(state="readonly")
+
+# ... continue for d2 through d12 ...
+
+# Update H flags (Health)
+# Note: You already have H flags from word27_int, so keep your existing H flag code
+
+# Update A flags (RF Chain)
+a1.config(state="normal")
+a1.delete(0, END)
+a1.insert(0, a1_flag)
+a1.config(state="readonly")
+
+# ... continue for a2 through a12 ...
+
+# Update R flags (Rejection)
+r1.config(state="normal")
+r1.delete(0, END)
+r1.insert(0, r1_flag)
+r1.config(state="readonly")
+
+# ... continue for r2 through r12 ...
+```
+
+**Important Notes:**
+1. You'll need to verify the hex indices for FLAG_CH5_CH6 through FLAG_CH11_CH12. The indices I provided (492-508) are estimates - you should check your actual data format to confirm the correct byte positions.
+
+2. For the 'A' flag (RF Chain), you mentioned it uses bits 5-6 (2 bits), but typically RF chain selection would be a single bit (0 or 1). I kept it as 2 bits in the decoding as per your description, but you may want to verify if it should be a single bit instead.
+
+3. Make sure to remove any duplicate flag decoding code you might already have (like the existing T, P, E flag decoding from other words) to avoid conflicts.
