@@ -1,3 +1,153 @@
+
+Tejaswini M <tejuabhi39@gmail.com>
+9:49 PM (12 minutes ago)
+to M250535
+
+I understand the issue. When you disconnect, the `serialData` flag is set to `False`, but the threads continue processing old/buffered data from the `data_queue`. The queue still contains data that was accumulated during the disconnected period, so when you reconnect, all that old data gets processed and displayed before fresh data arrives.
+
+Here's the fix:
+
+## Solution: Clear the Queue on Disconnect and Prevent Processing
+
+```python
+def connexion():
+    global ser, serialData, drop_COM, drop_bd, data_queue
+   
+    if connect_btn["text"] == "Disconnect":
+        serialData = False  # stop the thread
+       
+        # ✅ CLEAR THE DATA QUEUE
+        while not data_queue.empty():
+            try:
+                data_queue.get_nowait()
+            except:
+                break
+       
+        connect_btn["text"] = "Connect"
+        refresh_btn["state"] = "active"
+        drop_bd["state"] = "active"
+        drop_COM["state"] = "active"
+        file_entry1.config(state="normal")  # ENABLE
+        project_entry.config(state="normal")  # ENABLE
+        if ser and ser.is_open:
+            ser.close()
+            print("Serial port closed")
+ 
+    else:
+        serialData = True  # start the thread
+        connect_btn["text"] = "Disconnect"
+        refresh_btn["state"] = "disabled"
+        drop_bd["state"] = "disabled"
+        drop_COM["state"] = "disabled"
+        file_entry1.config(state="disabled")  # DISABLE
+        project_entry.config(state="disabled")  # DISABLE
+        port = clicked_com.get()
+        baud = clicked_bd.get()
+        try:
+            ser = serial.Serial(port, baud, timeout=1)
+            print("making serial object")
+            start_thread()
+        except Exception as e:
+            print(f"{e}")
+```
+
+## Additional Fix: Stop Processing Data When Disconnected
+
+Also modify the `process_data()` function to check `serialData` flag more frequently:
+
+```python
+def process_data():
+    global base_name, filename, serialData
+    try:
+        while True:
+            # ✅ CHECK IF STILL CONNECTED
+            if not serialData:
+                print("Process_data: Waiting for connection...")
+                time.sleep(0.5)
+                continue
+           
+            try:
+                # Use timeout to avoid blocking indefinitely
+                item = data_queue.get(timeout=1)
+            except queue.Empty:
+                continue
+           
+            if not item:
+                continue
+           
+            # ✅ DOUBLE-CHECK BEFORE PROCESSING
+            if not serialData:
+                # Queue item but don't process
+                data_queue.put(item)
+                break
+           
+            data_type, hexDecodedData = item
+           
+            # ... rest of your processing code ...
+```
+
+## Update Imports
+
+At the top of your file, make sure you have:
+
+```python
+import queue  # Add this import
+```
+
+## Also Fix readSerial() Function
+
+Make sure it respects the `serialData` flag:
+
+```python
+def readSerial():
+    global counter_value, counter_value2, counter_value3, counter_value4
+    global serialData, ser, hexDecodedData
+   
+    header1 = ["ac", "ca", "1f", "0a"]
+    header2 = ["ac", "ca", "1f", "0b"]
+    header3 = ["ac", "ca", "1f", "0c"]
+    header4 = ["ac", "ca", "1f", "0d"]
+   
+    header_index1 = 0
+    header_index2 = 0
+    header_index3 = 0
+    header_index4 = 0
+    try:
+        while serialData:  # ✅ CHECK FLAG
+            if not ser or not ser.is_open:
+                time.sleep(0.1)
+                continue
+           
+            if ser.in_waiting > 0:
+                byte = ser.read(1).hex()
+               
+                # ... rest of your header detection code ...
+               
+    except KeyboardInterrupt:
+        print("Reading from serial port stopped")
+    except Exception as e:
+        print(f"Serial read error: {e}")
+        serialData = False
+```
+
+## Summary of Changes:
+
+1. **Clear queue on disconnect** - Remove all pending data when disconnecting
+2. **Check `serialData` flag in `process_data()`** - Stop processing if disconnected
+3. **Check `serialData` flag in `readSerial()`** - Stop reading if disconnected
+4. **Use timeout in queue.get()** - Prevent blocking indefinitely
+
+This ensures that:
+- ✅ No old data is processed after reconnection
+- ✅ Threads gracefully stop when disconnected
+- ✅ Fresh data is displayed immediately when reconnected
+- ✅ No background processing happens when disconnected
+
+
+
+
+
+=====================================================================
 Looking at your code, I can see you need to decode the tracking flags (T, P, E, D, H, A, R) from the flag words. Based on your description, here's how to implement the decoding for all 12 channels:
 
 ## Flag Word Structure:
