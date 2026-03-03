@@ -212,3 +212,143 @@ Do you want me to do that?
 👉 With this version, you should no longer see `UnicodeDecodeError`, mismatched comparisons, or `AttributeError`.  
 
 Would you like me to also add **debug logging** (like printing out the first few `SEC` and `TIME OF WEEK` values) so you can verify why matches are or aren’t happening?
+
+
+====================================
+
+
+import csv
+
+def process_files(receiver_file, presize_file, output_file):
+
+    # ---- Step 1: Read presize file into a dictionary keyed by TIME OF WEEK ----
+    presize_dict = {}
+    with open(presize_file, 'r', encoding='utf-8') as f:
+        presize_reader = csv.DictReader(f)
+        for row in presize_reader:
+            presize_time = int(row['TIME OF WEEK'])
+            presize_dict[presize_time] = row  # assume 1 row per TIME OF WEEK
+
+    results = []
+
+    # ---- Step 2: Process receiver file ----
+    with open(receiver_file, 'r', encoding='utf-8') as f:
+        receiver_reader = csv.DictReader(f)
+        for receiver_row in receiver_reader:
+
+            # ---- Step 2a: Check 3 flags ----
+            if (receiver_row['TIME_AV'] == 'TIME AV' and
+                receiver_row['POS_MODE'] == '3D' and
+                receiver_row['POS_AV'] == 'POS AV'):
+
+                try:
+                    # ---- Step 2b: Check non-zero positions/velocities ----
+                    if (int(receiver_row['POS_X']) != 0 and
+                        int(receiver_row['POS_Y']) != 0 and
+                        int(receiver_row['POS_Z']) != 0 and
+                        int(receiver_row['VEL_X']) != 0 and
+                        int(receiver_row['VEL_Y']) != 0 and
+                        int(receiver_row['VEL_Z']) != 0):
+
+                        rec_sec = int(receiver_row['SEC'])
+                        rec_nano = int(receiver_row.get('NANO', 0))
+                        time_rec = rec_sec + rec_nano / 1e9
+
+                        # ---- Step 2c: Lookup matching presize row ----
+                        presize_row = presize_dict.get(rec_sec)
+                        if presize_row is None:
+                            continue  # no match
+
+                        presize_time = int(presize_row['TIME OF WEEK'])
+                        time_diff = time_rec - presize_time
+
+                        # ---- Receiver PVT_SV ----
+                        PVT_SV = [
+                            float(receiver_row['POS_X']),
+                            float(receiver_row['POS_Y']),
+                            float(receiver_row['POS_Z']),
+                            float(receiver_row['VEL_X']),
+                            float(receiver_row['VEL_Y']),
+                            float(receiver_row['VEL_Z'])
+                        ]
+
+                        # ---- Presize PRECISE_SV ----
+                        PRECISE_SV = [
+                            float(presize_row['POS_X']),
+                            float(presize_row['POS_Y']),
+                            float(presize_row['POS_Z']),
+                            float(presize_row['POS_VX']),
+                            float(presize_row['POS_VY']),
+                            float(presize_row['POS_VZ']),
+                            float(presize_row['ACC_X']),
+                            float(presize_row['ACC_Y']),
+                            float(presize_row['ACC_Z'])
+                        ]
+
+                        # ---- Compute PRECISE_SV_PROP ----
+                        PRECISE_SV_PROP = [
+                            PRECISE_SV[0] + PRECISE_SV[3]*time_diff + 0.5*PRECISE_SV[6]*time_diff**2,
+                            PRECISE_SV[1] + PRECISE_SV[4]*time_diff + 0.5*PRECISE_SV[7]*time_diff**2,
+                            PRECISE_SV[2] + PRECISE_SV[5]*time_diff + 0.5*PRECISE_SV[8]*time_diff**2
+                        ]
+
+                        combined = {
+                            'SEC': rec_sec,
+                            'NANO': rec_nano,
+                            'POS_MODE': receiver_row['POS_MODE'],
+                            'POS_AV': receiver_row['POS_AV'],
+                            'TIME_AV': receiver_row['TIME_AV'],
+                            'TIME_OF_WEEK': presize_time,
+                            'TIME_DIFF': time_diff,
+                            # Receiver PVT_SV
+                            'POS_X': PVT_SV[0],
+                            'POS_Y': PVT_SV[1],
+                            'POS_Z': PVT_SV[2],
+                            'POS_VX': PVT_SV[3],
+                            'POS_VY': PVT_SV[4],
+                            'POS_VZ': PVT_SV[5],
+                            # Presize PRECISE_SV
+                            'PRE_POS_X': PRECISE_SV[0],
+                            'PRE_POS_Y': PRECISE_SV[1],
+                            'PRE_POS_Z': PRECISE_SV[2],
+                            'PRE_POS_VX': PRECISE_SV[3],
+                            'PRE_POS_VY': PRECISE_SV[4],
+                            'PRE_POS_VZ': PRECISE_SV[5],
+                            'ACC_X': PRECISE_SV[6],
+                            'ACC_Y': PRECISE_SV[7],
+                            'ACC_Z': PRECISE_SV[8],
+                            # Propagated positions
+                            'PRECISE_SV_PROP_X': PRECISE_SV_PROP[0],
+                            'PRECISE_SV_PROP_Y': PRECISE_SV_PROP[1],
+                            'PRECISE_SV_PROP_Z': PRECISE_SV_PROP[2]
+                        }
+
+                        results.append(combined)
+
+                except ValueError:
+                    pass
+
+    # ---- Step 3: Write output ----
+    if results:
+        fieldnames = [
+            'SEC','NANO','POS_MODE','POS_AV','TIME_AV','TIME_OF_WEEK','TIME_DIFF',
+            'POS_X','POS_Y','POS_Z','POS_VX','POS_VY','POS_VZ',
+            'PRE_POS_X','PRE_POS_Y','PRE_POS_Z','PRE_POS_VX','PRE_POS_VY','PRE_POS_VZ',
+            'ACC_X','ACC_Y','ACC_Z',
+            'PRECISE_SV_PROP_X','PRECISE_SV_PROP_Y','PRECISE_SV_PROP_Z'
+        ]
+        with open(output_file, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(results)
+
+    print("Process completed.")
+    print("Total matches found:", len(results))
+
+
+if __name__ == "__main__":
+    process_files(
+        r"C:/Users/MyName/Desktop/G1_12-2025-20_PVT_H1.csv",
+        r"C:/Users/MyName/Desktop/presize.csv",
+        r"C:/Users/MyName/Desktop/matched_output.csv"
+    )
