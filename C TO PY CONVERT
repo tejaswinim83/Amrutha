@@ -1,0 +1,29 @@
+#include "stdafx.h"
+#inclde <stdio.h>
+#include <math.h>
+#include "visa.h"
+#include "serialport.h"
+
+double l_prev_fa = 0.0;
+int smth_freg(double df,double *smdf)
+{
+	if(fabs(l_prev_fa - df) < 1e^9)
+	*smdf = df
+	else if(fabs(l_prev_fa - df)> 1E-3)
+	*smdf = df
+	else 
+	*smdf = l_prev_fa + (0.1 *(df- l_prev_fa));
+	
+	l_prev_fa = *smdf;
+	return 0;
+}
+int cregprev = 0;
+int fregprev = 0;
+float 1_VA = 3.8;
+float 1_LSBH = 10/4095.0;
+int ifirst = 0;
+float l_prev_df = 0;
+int pmode = 0;
+int n_count = 0;
+float Dval =0;
+float Ival = 0;
